@@ -3,6 +3,8 @@ import cv2
 import json
 from math import *
 import matplotlib.pyplot as pyplot
+import scipy.cluster
+import time
 
 def calcStates(dataIn,movAvg):
     # dataOut[row][0] = # x position
@@ -39,7 +41,7 @@ def predictStates(dataInStates,frameTotal,xMin,xMax,yMin,yMax):
             dataOutStates[frameCurrent,3] = dataInStates[-1,5]
             dataOutStates[frameCurrent,2] = dataInStates[-1,2] + dataOutStates[frameCurrent,6]
 
-            # Keep the angle [-pi,+pi]
+            # Keep the angle within [-pi,+pi]
             if dataOutStates[frameCurrent,2] > pi:
                 dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] - 2*pi
             if dataOutStates[frameCurrent,2] < -pi:
@@ -57,7 +59,7 @@ def predictStates(dataInStates,frameTotal,xMin,xMax,yMin,yMax):
             dataOutStates[frameCurrent,3] = dataInStates[-1,5]
             dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent - 1,2] + dataOutStates[frameCurrent,6]
 
-            # Keep the angle [-pi,+pi]
+            # Keep the angle within [-pi,+pi]
             if dataOutStates[frameCurrent,2] > pi:
                 dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] - 2*pi
             if dataOutStates[frameCurrent,2] < -pi:
@@ -77,7 +79,7 @@ def predictStates(dataInStates,frameTotal,xMin,xMax,yMin,yMax):
         if dataOutStates[frameCurrent,1] <= yMin or dataOutStates[frameCurrent,1] >= yMax:
             dataOutStates[frameCurrent,2] = -1*dataOutStates[frameCurrent,2]
 
-        # Keep the angle [-pi,+pi]
+        # Keep the angle within [-pi,+pi]
         if dataOutStates[frameCurrent,2] > pi:
             dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] - 2*pi
         if dataOutStates[frameCurrent,2] < -pi:
@@ -109,26 +111,74 @@ def stateSense(stateIn):
     prob = 1
     return prob
 
+def noviceKalmanPrediction(dataInput):
+    # Calculate other state values from the base x,y.
+    movAvg = 50
+    dataInputStates = calcStates(dataInput,movAvg)
 
+    # Loop through all of the data, perform predictions, and plot.
+    dataXMin = numpy.amin(dataInputStates[:,0])
+    dataXMax = numpy.amax(dataInputStates[:,0])
+    dataYMin = numpy.amin(dataInputStates[:,1])
+    dataYMax = numpy.amax(dataInputStates[:,1])
+    frameTotal = 60
+    for frameCurrent in range(frameTotal,dataInputStates.shape[0]):
+        dataPredict = predictStates(dataInputStates[0:frameCurrent,:],frameTotal,dataXMin,dataXMax,dataYMin,dataYMax)
+        pyplot.ion()
+        pyplot.figure(1)
+        pyplot.clf()
+        pyplot.show()
+        pyplot.plot(dataInputStates[0:frameCurrent,0],dataInputStates[0:frameCurrent,1],'-b')
+        pyplot.plot(dataInputStates[frameCurrent:frameCurrent + frameTotal,0],dataInputStates[frameCurrent:frameCurrent + frameTotal,1],'-r')
+        pyplot.plot(dataPredict[:,0],dataPredict[:,1],'or')
+        pyplot.axis([dataXMin,dataXMax,dataYMin,dataYMax])
+        pyplot.draw()
 
-# Loop through all of the data, perform predictions, and plot.
-frameTotal = 60
-movAvg = 50
-dataInput = numpy.array(json.loads(open('hexbug-training_video-centroid_data').read()))
-dataInputStates = calcStates(dataInput,movAvg)
-dataXMin = numpy.amin(dataInputStates[:,0])
-dataXMax = numpy.amax(dataInputStates[:,0])
-dataYMin = numpy.amin(dataInputStates[:,1])
-dataYMax = numpy.amax(dataInputStates[:,1])
+    return
 
-for frameCurrent in range(frameTotal,dataInputStates.shape[0]):
-    dataPredict = predictStates(dataInputStates[0:frameCurrent,:],frameTotal,dataXMin,dataXMax,dataYMin,dataYMax)
+def kMeansPrediction(dataInput):
+    # Randomly down sample the data set for speed.
+    sampleSize = 1000
+    dataInputSample = dataInput[numpy.random.randint(0,dataInput.shape[0],sampleSize)]
+
+    # Calculate other state values from the base x,y.
+    movAvg = 50
+    dataInputStates = calcStates(dataInputSample,movAvg)
+
+    # Whiten the state values for k means clustering.
+    dataInputStatesWhiten = scipy.cluster.vq.whiten(dataInputStates)
+    kmeansCentroids = 5
+    kmeansIter = 20
+    dataClusters,_ = scipy.cluster.vq.kmeans(dataInputStatesWhiten,kmeansCentroids,kmeansIter)
+
+    # Label the data set based upon the clusters.
+    dataInputLabels,_ = scipy.cluster.vq.vq(dataInputStatesWhiten,dataClusters)
+
+    # Concatenate the labels onto the original training data set.
+    dataInputLabels.shape = (dataInputLabels.shape[0],1)
+    dataInputLabeled = numpy.concatenate((dataInputStates,dataInputLabels),axis=1)
+
+    # Loop through each unique label and scatter plot it with a random color to see where the clusters are located.
+    dataInputLabelsUnique = numpy.unique(dataInputLabels)
     pyplot.ion()
     pyplot.figure(1)
     pyplot.clf()
-    pyplot.show()
-    pyplot.plot(dataInputStates[0:frameCurrent,0],dataInputStates[0:frameCurrent,1],'-b')
-    pyplot.plot(dataInputStates[frameCurrent:frameCurrent + frameTotal,0],dataInputStates[frameCurrent:frameCurrent + frameTotal,1],'-r')
-    pyplot.plot(dataPredict[:,0],dataPredict[:,1],'or')
+    dataXMin = numpy.amin(dataInputStates[:,0])
+    dataXMax = numpy.amax(dataInputStates[:,0])
+    dataYMin = numpy.amin(dataInputStates[:,1])
+    dataYMax = numpy.amax(dataInputStates[:,1])
     pyplot.axis([dataXMin,dataXMax,dataYMin,dataYMax])
-    pyplot.draw()
+    for label in dataInputLabelsUnique:
+        dataFiltered = dataInputLabeled[dataInputLabeled[:,9] == label,:]
+        pyplot.show()
+        pyplot.scatter(dataFiltered[:,0],dataFiltered[:,1],color=numpy.random.rand(3,1))
+        pyplot.draw()
+
+    return
+
+
+dataInput = numpy.array(json.loads(open('hexbug-training_video-centroid_data').read()))
+kMeansPrediction(dataInput)
+time.sleep(5)
+noviceKalmanPrediction(dataInput)
+
