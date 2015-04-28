@@ -1,0 +1,200 @@
+import numpy
+import cv2
+import json
+from math import *
+import matplotlib.pyplot as pyplot
+import scipy.cluster
+import time
+import pandas
+
+def calcStates(dataIn,movAvg):
+    # dataOut[row][0]  = # x position
+    # dataOut[row][1]  = # y position
+    # dataOut[row][2]  = # heading
+    # dataOut[row][3]  = # velocity
+    # dataOut[row][4]  = # turn rate
+    # dataOut[row][5]  = # cumulative velocity average
+    # dataOut[row][6]  = # cumulative turn rate average
+    # dataOut[row][7]  = # movAvg moving average of velocity
+    # dataOut[row][8]  = # movAvg moving average of turn rate
+    # dataOut[row][9]  = # cumulative velocity std dev
+    # dataOut[row][10] = # cumulative turn rate std dev
+
+    # Calculate states.
+    dataOut = numpy.zeros((dataIn.shape[0],9))
+    dataOut[0:,0] = dataIn[0:,0]
+    dataOut[0:,1] = dataIn[0:,1]
+    dataOut[1:,2] = numpy.arctan2(dataOut[1:,1] - dataOut[0:-1,1],dataOut[1:,0] - dataOut[0:-1,0])
+    dataOut[1:,3] = numpy.sqrt((dataOut[1:,0] - dataOut[1 - 1:-1,0])**2 + (dataOut[1:,1] - dataOut[1 - 1:-1,1])**2)
+    dataOut[2:,4] = dataOut[2:,2] - dataOut[1:-1,2]
+
+    # Eliminate turn rates of greater than pi/2 by setting to 0. Eliminates weighting wall bounces in other calculations.
+    dataOut[dataOut[:,4] > pi/2,4] = 0
+    dataOut[dataOut[:,4] < -pi/2,4] = 0
+
+    # More calculate states.
+    dataOut[1:,5] = numpy.cumsum(dataOut[1:,3])/numpy.linspace(1,dataOut.shape[0] - 1,dataOut.shape[0] - 1)
+    dataOut[2:,6] = numpy.cumsum(dataOut[2:,4])/numpy.linspace(1,dataOut.shape[0] - 2,dataOut.shape[0] - 2)
+    dataOut[0 + movAvg:,7] = (numpy.cumsum(dataOut[0:,3])[movAvg:] - numpy.cumsum(dataOut[0:,3])[:-movAvg])/(movAvg*1.0)
+    dataOut[1 + movAvg:,8] = (numpy.cumsum(dataOut[1:,4])[movAvg:] - numpy.cumsum(dataOut[1:,4])[:-movAvg])/(movAvg*1.0)
+
+    return dataOut
+
+def kMeansCluster(dataInStates,kmeansCentroids = 10,kmeansIter = 50):
+    # Whiten the state values for k means clustering.
+    dataInStatesWhiten = scipy.cluster.vq.whiten(dataInStates)
+
+    # Cluster the states via k means. Remove X and Y for clustering, start at 2.
+    dataInClusters,_ = scipy.cluster.vq.kmeans(dataInStatesWhiten[:,2:],kmeansCentroids,kmeansIter)
+
+    # Label the data set based upon the clusters. Remove X and Y for labeling, start at 2.
+    dataInLabels,_ = scipy.cluster.vq.vq(dataInStatesWhiten[:,2:],dataInClusters)
+
+    # Loop through each unique label and store the means and stds for that cluster.
+    dataInLabelsUnique = numpy.unique(dataInLabels)
+
+    # Initialize the means and stds arrays to return.
+    dataInStatesClusterMeans = numpy.zeros((dataInLabelsUnique.shape[0],dataInStates.shape[1]))
+    dataInStatesClusterStds = numpy.zeros((dataInLabelsUnique.shape[0],dataInStates.shape[1]))
+    for dataInLabel in dataInLabelsUnique:
+        dataInStatesCluster = dataInStates[dataInLabels == dataInLabel,:]
+        dataInStatesClusterMeans[dataInLabel,:] = numpy.mean(dataInStatesCluster,axis=0)
+        dataInStatesClusterStds[dataInLabel,:] = numpy.std(dataInStatesCluster,axis=0)
+
+    return dataInClusters,dataInLabelsUnique,dataInStatesClusterMeans,dataInStatesClusterStds
+
+def kMeansLabel(dataClusters,dataLabelsUnique,dataStatesClusterMeans,dataStatesClusterStds,dataIn):
+    # Whiten the state values for k means labeling.
+    dataInWhiten = scipy.cluster.vq.whiten(dataIn)
+
+    # Label the data set based upon the clusters. Remove X and Y for labeling, start at 2.
+    dataInLabels,_ = scipy.cluster.vq.vq(dataInWhiten[:,2:],dataClusters)
+
+    # Initialize the means and stds arrays to return.
+    dataInMeans = numpy.zeros((dataInLabels.max() + 1,dataIn.shape[1]))
+    dataInStds = numpy.zeros((dataInLabels.max() + 1,dataIn.shape[1]))
+
+    # Loop through each unique label and store the means and stds for that cluster.
+    dataInLabelsUnique = numpy.unique(dataInLabels)
+    for dataInLabel in dataInLabelsUnique:
+        dataInMeans[dataInLabel,:] = dataStatesClusterMeans[dataLabelsUnique == dataInLabel,:]
+        dataInStds[dataInLabel,:] = dataStatesClusterStds[dataLabelsUnique == dataInLabel,:]
+
+    # # Loop through each unique label and calculate the mean and std for that cluster.
+    # dataInLabelsUnique = numpy.unique(dataInLabels)
+    # for dataInLabel in dataInLabelsUnique:
+    #     # Find indexes that match the label.
+    #     dataIndexes = dataLabels == dataInLabel
+    #     dataInIndexes = dataInLabels == dataInLabel
+    #
+    #     # Store the means.
+    #     dataTemp = dataClustersMeans[dataIndexes]
+    #     dataTemp = numpy.reshape(dataTemp,(1,dataTemp.shape[0]))
+    #     dataInStatesMeans[dataInIndexes,:] = dataTemp
+    #
+    #     # Store the stds.
+    #     dataTemp = dataClustersStds[dataIndexes]
+    #     dataTemp = numpy.reshape(dataTemp,(1,dataTemp.shape[0]))
+    #     dataInStatesStds[dataInIndexes,:] = dataTemp
+
+    return dataInLabels,dataInMeans,dataInStds
+
+def kalmanRandInitStates(dataInStates,samplesTotal):
+    dataRandStates = numpy.zeros((samplesTotal,dataInStates.shape[1]))
+    for stateCnt in range(dataInStates.shape[1]):
+        dataRandStates[:,stateCnt] = numpy.random.uniform(min(dataInStates[:,stateCnt]),max(dataInStates[:,stateCnt]),samplesTotal)
+    return dataRandStates
+
+def kalmanSense(dataInStates,dataSenseState):
+    sigma = 20
+    diff = dataInStates - numpy.tile(dataSenseState,(dataInStates.shape[0],1))
+    #diffPercent = diff/numpy.tile(dataSenseState,(dataInStates.shape[0],1))
+    diffSq = diff**2
+    MSE = numpy.sum(diffSq,axis=1)/dataSenseState.shape[1]
+    MSE = numpy.reshape(MSE,(dataInStates.shape[0],1))
+    dataOutProb = numpy.exp(-1*MSE/sigma**2)
+    dataOutProb = numpy.reshape(dataOutProb,(dataInStates.shape[0],1))
+    return dataOutProb
+
+def kmeansMove(dataRandStates,dataRandLabels,dataRandCurrentMeans,dataRandCurrentStds):
+    for randCnt in range(0,dataRandStates)
+    # Loop through each unique label and apply the means and stds for that cluster.
+    dataRandLabelsUnique = numpy.unique(dataInLabels)
+    for dataInLabel in dataInLabelsUnique:
+        dataInMeans[dataInLabel,:] = dataStatesClusterMeans[dataLabelsUnique == dataInLabel,:]
+        dataInStds[dataInLabel,:] = dataStatesClusterStds[dataLabelsUnique == dataInLabel,:]
+    end
+
+
+
+
+            dataOutStates[frameCurrent,8] = dataInStates[-1,8]
+            dataOutStates[frameCurrent,7] = dataInStates[-1,7]
+            dataOutStates[frameCurrent,6] = dataInStates[-1,6]
+            dataOutStates[frameCurrent,5] = dataInStates[-1,5]
+            dataOutStates[frameCurrent,4] = dataInStates[-1,8]
+            dataOutStates[frameCurrent,3] = dataInStates[-1,7]
+            dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent - 1,2] + dataOutStates[frameCurrent,8]
+
+            # Keep the angle within [-pi,+pi]
+            if dataOutStates[frameCurrent,2] > pi:
+                dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] - 2*pi
+            if dataOutStates[frameCurrent,2] < -pi:
+                dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] + 2*pi
+
+            dataOutStates[frameCurrent,1] = dataOutStates[frameCurrent - 1,1] + dataOutStates[frameCurrent,7]*sin(dataOutStates[frameCurrent,2])
+            dataOutStates[frameCurrent,0] = dataOutStates[frameCurrent - 1,0] + dataOutStates[frameCurrent,7]*cos(dataOutStates[frameCurrent,2])
+
+        # Wall bounce symmetry.
+        if dataOutStates[frameCurrent,0] <= xMin or dataOutStates[frameCurrent,0] >= xMax:
+            if dataOutStates[frameCurrent,2] >= 0:
+                dataOutStates[frameCurrent,2] =  pi - dataOutStates[frameCurrent,2]
+            if dataOutStates[frameCurrent,2] < 0:
+                dataOutStates[frameCurrent,2] = -pi - dataOutStates[frameCurrent,2]
+
+        # Wall bounce symmetry.
+        if dataOutStates[frameCurrent,1] <= yMin or dataOutStates[frameCurrent,1] >= yMax:
+            dataOutStates[frameCurrent,2] = -1*dataOutStates[frameCurrent,2]
+
+        # Keep the angle within [-pi,+pi]
+        if dataOutStates[frameCurrent,2] > pi:
+            dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] - 2*pi
+        if dataOutStates[frameCurrent,2] < -pi:
+            dataOutStates[frameCurrent,2] = dataOutStates[frameCurrent,2] + 2*pi
+
+
+
+
+dataIn = numpy.array(json.loads(open('hexbug-training_video-centroid_data').read()))
+
+for dataInCnt in range(0,dataIn.shape[0]):
+    # Calculate all of the state variables.
+    movAvg = 10
+    dataInStates = calcStates(dataIn,movAvg)
+
+    # Get latest data point from the In set.
+    dataInCurrent = dataInStates[dataInCnt]
+    dataInCurrent = numpy.reshape(dataInCurrent,(1,dataInCurrent.shape[0]))
+
+    # Initialize a uniform random set over all the data input state space.
+    samplesTotal = 300
+    dataRandStates = kalmanRandInitStates(dataInStates,samplesTotal)
+
+    # Calculate kalman sense probability.
+    dataInCurrentProb = kalmanSense(dataInStates,dataInCurrent)
+
+    # Randomly down sample the data set for clustering speed.
+    sampleSize = 4000
+    sampleStates = dataInStates[numpy.random.randint(0,dataInStates.shape[0],sampleSize)]
+
+    # Perform clustering to get labels.
+    dataInClusters,dataInLabelsUnique,dataInStatesClusterMeans,dataInStatesClusterStds = kMeansCluster(sampleStates,kmeansCentroids = 10,kmeansIter = 50)
+
+    # Label the data of interest and return the mean and std.
+    dataInCurrentLabels,dataInCurrentMeans,dataInCurrentStds = kMeansLabel(dataInClusters,dataInLabelsUnique,dataInStatesClusterMeans,dataInStatesClusterStds,dataInCurrent)
+    dataRandLabels,dataRandCurrentMeans,dataRandCurrentStds = kMeansLabel(dataInClusters,dataInLabelsUnique,dataInStatesClusterMeans,dataInStatesClusterStds,dataRandStates)
+
+    # Move the rand data set based upon kmeans classification.
+    kmeansMove(dataRandStates,dataRandLabels,dataRandCurrentMeans,dataRandCurrentStds)
+    print "done"
+
