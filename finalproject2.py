@@ -73,6 +73,8 @@ def kMeansLabel(dataClusters,dataLabelsUnique,dataStatesClusterMeans,dataStatesC
     dataInLabels,_ = scipy.cluster.vq.vq(dataInWhiten[:,2:],dataClusters)
 
     # Initialize the means and stds arrays to return.
+    print dataInLabels.max()
+    print dataIn.shape[1]
     dataInMeans = numpy.zeros((dataInLabels.max() + 1,dataIn.shape[1]))
     dataInStds = numpy.zeros((dataInLabels.max() + 1,dataIn.shape[1]))
 
